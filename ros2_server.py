@@ -7,6 +7,7 @@ from base_ctrl import BaseController
 #esp32_serial = serial.Serial('/dev/ttyAMA0', 115200, timeout=1)
 base = BaseController('/dev/ttyAMA0', 115200)
 
+"""
 def send_to_esp32(command):
     try:
         # Convert the command to a JSON string and send it to the ESP32
@@ -14,6 +15,11 @@ def send_to_esp32(command):
         print(f'Sent to ESP32: {command}')
     except Exception as e:
         print(f'Error sending to ESP32: {str(e)}')
+"""
+
+def send_to_esp32(command):
+	base.send_command(command)
+	
 
 def start_server():
     host = '0.0.0.0'  # Listen on all network interfaces
@@ -33,8 +39,8 @@ def start_server():
                 if data:
                     # Decode the JSON data and send it to the ESP32
                     command = json.loads(data.decode('utf-8'))
-                    #send_to_esp32(command)
-                    base.send_command(command)
+                    send_to_esp32(command)
+                    #base.send_command(command)
                     print(f'Sent to ESP32: {command}')
 
 if __name__ == '__main__':
