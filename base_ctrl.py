@@ -149,11 +149,14 @@ class BaseController:
 
 	def feedback_data(self):
 		try:
+			#print("inside feedback_data try clause")
 			while self.rl.s.in_waiting > 0:
 				self.data_buffer = json.loads(self.rl.readline().decode('utf-8'))
+				print(f'self.data_buffer: {self.data_buffer}')
 				if 'T' in self.data_buffer:
 					self.base_data = self.data_buffer
 					self.data_buffer = None
+					#print(f'self.base_data: {self.base_data}')
 					if self.base_data["T"] == 1003:
 						print(self.base_data)
 						return self.base_data
@@ -162,6 +165,7 @@ class BaseController:
 			self.base_data = self.data_buffer
 			return self.base_data
 		except Exception as e:
+			print(f'data buffer in exception: {self.data_buffer}')
 			self.rl.clear_buffer()
 			print(f"[base_ctrl.feedback_data] error: {e}")
 

@@ -10,38 +10,32 @@ from base_ctrl import BaseController
 #esp32_serial = serial.Serial('/dev/ttyAMA0', 115200, timeout=1)
 base = BaseController('/dev/ttyAMA0', 115200)
 
-"""
-def send_to_esp32(command):
-    #Send a command to the ESP32 over USB
-    try:
-        esp32_serial.write(json.dumps(command).encode('utf-8'))
-        print(f'Sent to ESP32: {command}')
-    except Exception as e:
-        print(f'Error sending to ESP32: {str(e)}')
-"""
-
 def send_to_esp32(command):
     base.send_command(command)
-    print(f'Sent to ESP32: {command}')
+    #print(f'Sent to ESP32: {command}')
 
 def receive_feedback_from_esp32():
-    """Read feedback data from the ESP32."""
-    try:
-        feedback_data = base.feedback_data()
-        #feedback_data = esp32_serial.readline().decode('utf-8')
-        if feedback_data:
-            print(f'Received feedback from ESP32: {feedback_data}')
-            feedback = feedback_data
-            #feedback = json.loads(feedback_data)
-            #print(f'Received feedback from ESP32: {feedback}')
-            return feedback
-    except Exception as e:
-        print(f'Error receiving feedback: {str(e)}')
-    return None
+    # Implement an infinite loop to continuously monitor serial port data.
+    while True:
+        try:
+            # Read a line of data from the serial port, decode it into a 'utf-8' formatted string, and attempt to convert it into a JSON object.
+            data_recv_buffer = json.loads(base.rl.readline().decode('utf-8'))
+            # Check if the parsed data contains the key 'T'.
+            if 'T' in data_recv_buffer:
+                # If the value of 'T' is 1001, print the received data and break out of the loop.
+                if data_recv_buffer['T'] == 1001:
+                    #print(data_recv_buffer)
+                    return data_recv_buffer
+                    break
+        # If an exception occurs while reading or processing the data, ignore the exception and continue to listen for the next line of data.
+        except:
+            print('receive feedback from esp32 failed')
+            return None
+
 
 def disable_auto_feedback():
     """Send command to disable automatic feedback from ESP32."""
-    disable_command = {"T": 131, "cmd": 0}
+    disable_command = {"T": 131}
     send_to_esp32(disable_command)
 
 def request_feedback():
@@ -90,13 +84,13 @@ def feedback_server():
                 print(f'Connected by {addr}')
                 data = conn.recv(1024)
 
+                #print(f'data received from client {data}')
+
                 if data:
                     request = json.loads(data.decode('utf-8'))
 
-                    if request.get('command') == 'request_feedback':
-                        # Request feedback from ESP32
-                        request_feedback()
-
+                    # The feedback command was given
+                    if request.get('T') == 130:
                         # Get the feedback and send it back
                         feedback = receive_feedback_from_esp32()
 
@@ -112,7 +106,7 @@ def feedback_server():
 
 if __name__ == '__main__':
     # Disable automatic feedback from ESP32
-    disable_auto_feedback()
+    #disable_auto_feedback()
 
     # Run the motor control server and feedback server in separate threads
     motor_thread = threading.Thread(target=motor_control_server, daemon=True)
