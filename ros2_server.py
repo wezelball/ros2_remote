@@ -3,6 +3,8 @@ import json
 import time
 import serial
 import threading
+import cv2
+from picamera2 import Picamera2
 
 from base_ctrl import BaseController
 
@@ -104,6 +106,44 @@ def feedback_server():
                             conn.sendall(json.dumps(response).encode('utf-8'))
                             print(f'Sent feedback response: {response}')
 
+def video_stream_server():
+    """Capture video and stream it to the laptop."""
+    host = '0.0.0.0'
+    port = 8000  # Port for video streaming
+
+    # Initialize Picamera2
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_preview_configuration(main={"size": (640, 480)}))
+    picam2.start()
+
+    # Open socket for video streaming
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, port))
+        s.listen(1)
+        print(f'Video stream server listening on {host}:{port}')
+
+        conn, addr = s.accept()
+        print(f'Video stream connection from {addr}')
+
+        try:
+            while True:
+                frame = picam2.capture_array()
+
+                # Encode frame as JPEG
+                ret, buffer = cv2.imencode('.jpg', frame)
+                if not ret:
+                    continue
+
+                # Send the length of the frame first
+                frame_size = len(buffer)
+                conn.sendall(frame_size.to_bytes(4, 'big'))
+
+                # Send the actual frame
+                conn.sendall(buffer.tobytes())
+
+        except Exception as e:
+            print(f'Error streaming video: {e}')
+
 if __name__ == '__main__':
     # Disable automatic feedback from ESP32
     #disable_auto_feedback()
@@ -111,9 +151,12 @@ if __name__ == '__main__':
     # Run the motor control server and feedback server in separate threads
     motor_thread = threading.Thread(target=motor_control_server, daemon=True)
     feedback_thread = threading.Thread(target=feedback_server, daemon=True)
+    video_thread = threading.Thread(target=video_stream_server, daemon=True)
 
     motor_thread.start()
     feedback_thread.start()
+    video_thread.start()
 
     motor_thread.join()
     feedback_thread.join()
+    video_thread.join()
