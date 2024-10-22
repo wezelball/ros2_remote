@@ -1,0 +1,181 @@
+import socket
+import json
+import time
+import serial
+import threading
+import cv2
+from picamera2 import Picamera2
+
+from base_ctrl import BaseController
+
+HOST_IP = '0.0.0.0'
+MOTOR_PORT = GIMBAL_PORT = 5000
+FEEDBACK_PORT = 6000
+VIDEO_PORT = 8000
+SERIAL_PORT = '/dev/ttyAMA0'
+BAUD_RATE = 115200
+
+
+class RoverController():
+    def __init__(self):
+        # Serial connection to the ESP32
+        #self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+        self.base = BaseController(SERIAL_PORT, BAUD_RATE)
+
+        # Set up socket connections for different components
+        self.motor_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.motor_sock.bind((HOST_IP, MOTOR_PORT))
+        self.motor_sock.listen(1)
+
+        self.feedback_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.feedback_sock.bind((HOST_IP, FEEDBACK_PORT))
+        self.feedback_sock.listen(1)
+
+        self.video_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.video_sock.bind((HOST_IP, VIDEO_PORT))
+        self.video_sock.listen(1)
+
+        # Picamera2 for video streaming
+        self.picam2 = Picamera2()
+        self.picam2.configure(self.picam2.create_preview_configuration(main={"format": "RGB888"}))
+        self.picam2.start()
+
+        # Start threads for motor, feedback, and video
+        self.motor_thread = threading.Thread(target=self.motor_control_thread, daemon=True)
+        self.motor_thread.start()
+
+        self.feedback_thread = threading.Thread(target=self.feedback_thread_func, daemon=True)
+        self.feedback_thread.start()
+
+        self.video_thread = threading.Thread(target=self.video_stream_thread, daemon=True)
+        self.video_thread.start()
+
+        print("Robot server has started")
+
+    def send_serial_command(self, command):
+        """Send JSON command via serial to the ESP32."""
+        #command_str = json.dumps(command)
+        command_str = command
+        self.base.send_command(command_str)
+
+    def read_serial_feedback(self):
+        """Read feedback from the ESP32 via serial."""
+        # Implement an infinite loop to continuously monitor serial port data.
+        while True:
+            try:
+                # Read a line of data from the serial port, decode it into a 'utf-8' formatted string, and attempt to convert it into a JSON object.
+                data_recv_buffer = json.loads(self.base.rl.readline().decode('utf-8'))
+                # Check if the parsed data contains the key 'T'.
+                if 'T' in data_recv_buffer:
+                    # If the value of 'T' is 1001, print the received data and break out of the loop.
+                    if data_recv_buffer['T'] == 1001:
+                        # print(data_recv_buffer)
+                        return data_recv_buffer
+                        break
+            # If an exception occurs while reading or processing the data, ignore the exception and continue to listen for the next line of data.
+            except:
+                print('receive feedback from esp32 failed')
+                return None
+
+    def motor_control_thread(self):
+        """Thread to handle incoming motor commands from the laptop via sockets."""
+        while True:
+            conn, _ = self.motor_sock.accept()
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                try:
+                    command = json.loads(data.decode('utf-8'))
+                    self.send_serial_command(command)
+                except json.JSONDecodeError:
+                    print("Invalid JSON received")
+            conn.close()
+
+    def feedback_thread_func(self):
+        """Thread to handle feedback requests and responses."""
+        while True:
+            conn, _ = self.feedback_sock.accept()
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                command = json.loads(data.decode('utf-8'))
+                if command.get("T") == 130:
+                    # Query for feedback
+                    #self.send_serial_command(command)
+                    feedback = self.read_serial_feedback()
+                    if feedback:
+                        conn.sendall(json.dumps(feedback).encode('utf-8'))
+            conn.close()
+
+    def video_stream_thread(self):
+        # Open socket for video streaming
+        #with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        #    s.bind((HOST_IP, VIDEO_PORT))
+        #    s.listen(1)
+        #    print(f'Video stream server listening on {HOST_IP}:{VIDEO_PORT}')
+
+        conn, addr = self.video_sock.accept()
+        #conn, addr = s.accept()
+        print(f'Video stream connection from {addr}')
+
+        try:
+            while True:
+                frame = self.picam2.capture_array()
+
+                # Encode frame as JPEG
+                ret, buffer = cv2.imencode('.jpg', frame)
+                if not ret:
+                    continue
+
+                # Send the length of the frame first
+                frame_size = len(buffer)
+                conn.sendall(frame_size.to_bytes(4, 'big'))
+
+                # Send the actual frame
+                conn.sendall(buffer.tobytes())
+
+        except Exception as e:
+            print(f'Error streaming video: {e}')
+
+    # Gimbal control functions
+    def control_gimbal_simple(self, x, y, spd=0, acc=0):
+        """Basic gimbal control command."""
+        command = {"T": 133, "X": x, "Y": y, "SPD": spd, "ACC": acc}
+        self.send_serial_command(command)
+
+    def control_gimbal_move(self, x, y, sx, sy):
+        """Continuous gimbal control command."""
+        command = {"T": 134, "X": x, "Y": y, "SX": sx, "SY": sy}
+        self.send_serial_command(command)
+
+    def stop_gimbal(self):
+        """Stop gimbal movement."""
+        command = {"T": 135}
+        self.send_serial_command(command)
+
+    def close_sockets(self):
+        """Close network sockets on shutdown"""
+        self.motor_sock.close()
+        self.feedback_sock.close()
+        self.video_sock.close()
+
+
+# Example usage
+if __name__ == '__main__':
+    rover = RoverController()
+
+    try:
+        while True:
+            time.sleep(1)
+            # Place logging/status checks here
+    except KeyboardInterrupt:
+        print("Shutting down RoverController")
+        rover.close_sockets()
+
+
+    # Example: Rotate gimbal 45 degrees to the right and 30 degrees up
+    #rover.control_gimbal_simple(x=45, y=30)
+    #time.sleep(2)
+    #rover.stop_gimbal()
