@@ -7,6 +7,7 @@ import cv2
 from picamera2 import Picamera2
 
 from base_ctrl import BaseController
+from base_ctrl import ReadLine
 
 HOST_IP = '0.0.0.0'
 MOTOR_PORT = GIMBAL_PORT = 5000
@@ -21,6 +22,7 @@ class RoverController():
         # Serial connection to the ESP32
         #self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
         self.base = BaseController(SERIAL_PORT, BAUD_RATE)
+        self.readline = ReadLine
 
         # Set up socket connections for different components
         self.motor_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -57,14 +59,16 @@ class RoverController():
         #command_str = json.dumps(command)
         command_str = command
         self.base.send_command(command_str)
-
+    """
     def read_serial_feedback(self):
-        """Read feedback from the ESP32 via serial."""
+        #Read feedback from the ESP32 via serial
         # Implement an infinite loop to continuously monitor serial port data.
         while True:
             try:
                 # Read a line of data from the serial port, decode it into a 'utf-8' formatted string, and attempt to convert it into a JSON object.
+                print('just before read line')
                 data_recv_buffer = json.loads(self.base.rl.readline().decode('utf-8'))
+                print(f'data_recv_buffer {data_recv_buffer}')
                 # Check if the parsed data contains the key 'T'.
                 if 'T' in data_recv_buffer:
                     # If the value of 'T' is 1001, print the received data and break out of the loop.
@@ -76,6 +80,7 @@ class RoverController():
             except:
                 print('receive feedback from esp32 failed')
                 return None
+    """
 
     def motor_control_thread(self):
         """Thread to handle incoming motor commands from the laptop via sockets."""
@@ -92,6 +97,22 @@ class RoverController():
                     print("Invalid JSON received")
             conn.close()
 
+    def receive_feedback_from_esp32(self):
+        # Implement an infinite loop to continuously monitor serial port data.
+        while True:
+            try:
+                data_recv_buffer = self.base.feedback_data()
+                # Check if the parsed data contains the key 'T'.
+                if 'T' in data_recv_buffer:
+                    # If the value of 'T' is 1001, print the received data and break out of the loop.
+                    if data_recv_buffer['T'] == 1001:
+                        return data_recv_buffer
+                        break
+            # If an exception occurs while reading or processing the data, ignore the exception and continue to listen for the next line of data.
+            except:
+                print('receive feedback from esp32 failed')
+                return None
+
     def feedback_thread_func(self):
         """Thread to handle feedback requests and responses."""
         while True:
@@ -101,13 +122,32 @@ class RoverController():
                 if not data:
                     break
                 command = json.loads(data.decode('utf-8'))
+                #print(f'Feedback cmd from dev: {command} ')
                 if command.get("T") == 130:
                     # Query for feedback
                     #self.send_serial_command(command)
-                    feedback = self.read_serial_feedback()
+                    self.request_feedback()
+                    feedback = self.receive_feedback_from_esp32()
+                    #print(f'feedback_thread_func:feedback from esp32: {feedback}')
                     if feedback:
-                        conn.sendall(json.dumps(feedback).encode('utf-8'))
+                        # Extract odometer and battery voltage from feedback
+                        response = {
+                            "odl": feedback.get('odl', 0),
+                            "odr": feedback.get('odr', 0),
+                            "battery_voltage": feedback.get('v', 0)
+                        }
+                        conn.sendall(json.dumps(response).encode('utf-8'))
             conn.close()
+
+    def disable_auto_feedback(self):
+        """Send command to disable automatic feedback from ESP32."""
+        disable_command = {"T": 131, "cmd": 0}
+        self.send_serial_command(disable_command)
+
+    def request_feedback(self):
+        """Request feedback from the ESP32."""
+        feedback_command = {"T": 130}
+        self.send_serial_command(feedback_command)
 
     def video_stream_thread(self):
         # Open socket for video streaming
@@ -165,6 +205,7 @@ class RoverController():
 # Example usage
 if __name__ == '__main__':
     rover = RoverController()
+    rover.disable_auto_feedback()
 
     try:
         while True:
