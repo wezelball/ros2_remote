@@ -83,7 +83,7 @@ class RoverController():
     """
 
     def motor_control_thread(self):
-        """Thread to handle incoming motor commands from the laptop via sockets."""
+        """Thread to handle incoming commands (not just motors) from the laptop via sockets."""
         while True:
             conn, _ = self.motor_sock.accept()
             while True:
