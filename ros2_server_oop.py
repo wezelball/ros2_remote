@@ -59,28 +59,6 @@ class RoverController():
         #command_str = json.dumps(command)
         command_str = command
         self.base.send_command(command_str)
-    """
-    def read_serial_feedback(self):
-        #Read feedback from the ESP32 via serial
-        # Implement an infinite loop to continuously monitor serial port data.
-        while True:
-            try:
-                # Read a line of data from the serial port, decode it into a 'utf-8' formatted string, and attempt to convert it into a JSON object.
-                print('just before read line')
-                data_recv_buffer = json.loads(self.base.rl.readline().decode('utf-8'))
-                print(f'data_recv_buffer {data_recv_buffer}')
-                # Check if the parsed data contains the key 'T'.
-                if 'T' in data_recv_buffer:
-                    # If the value of 'T' is 1001, print the received data and break out of the loop.
-                    if data_recv_buffer['T'] == 1001:
-                        # print(data_recv_buffer)
-                        return data_recv_buffer
-                        break
-            # If an exception occurs while reading or processing the data, ignore the exception and continue to listen for the next line of data.
-            except:
-                print('receive feedback from esp32 failed')
-                return None
-    """
 
     def motor_control_thread(self):
         """Thread to handle incoming commands (not just motors) from the laptop via sockets."""
@@ -93,6 +71,7 @@ class RoverController():
                 try:
                     command = json.loads(data.decode('utf-8'))
                     self.send_serial_command(command)
+                    print(f'Received command: {command}')
                 except json.JSONDecodeError:
                     print("Invalid JSON received")
             conn.close()
@@ -150,12 +129,6 @@ class RoverController():
         self.send_serial_command(feedback_command)
 
     def video_stream_thread(self):
-        # Open socket for video streaming
-        #with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        #    s.bind((HOST_IP, VIDEO_PORT))
-        #    s.listen(1)
-        #    print(f'Video stream server listening on {HOST_IP}:{VIDEO_PORT}')
-
         conn, addr = self.video_sock.accept()
         #conn, addr = s.accept()
         print(f'Video stream connection from {addr}')
