@@ -1,7 +1,6 @@
 import socket
 import json
 import time
-import serial
 import threading
 import cv2
 from picamera2 import Picamera2
@@ -20,7 +19,6 @@ BAUD_RATE = 115200
 class RoverController():
     def __init__(self):
         # Serial connection to the ESP32
-        #self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
         self.base = BaseController(SERIAL_PORT, BAUD_RATE)
         self.readline = ReadLine
 
@@ -63,7 +61,6 @@ class RoverController():
 
     def send_serial_command(self, command):
         """Send JSON command via serial to the ESP32."""
-        #command_str = json.dumps(command)
         command_str = command
         self.base.send_command(command_str)
         #print(f'Sent command to ESP32: {command}')
@@ -128,7 +125,6 @@ class RoverController():
                 #print(f'Feedback cmd from dev: {command} ')
                 if command.get("T") == 130:
                     # Query for feedback
-                    #self.send_serial_command(command)
                     self.request_feedback()
                     feedback = self.receive_feedback_from_esp32()
                     #print(f'feedback_thread_func:feedback from esp32: {feedback}')
@@ -141,9 +137,6 @@ class RoverController():
                         }
                         conn.sendall(json.dumps(response).encode('utf-8'))
             conn.close()
-
-
-
 
     def disable_auto_feedback(self):
         """Send command to disable automatic feedback from ESP32."""
@@ -215,8 +208,3 @@ if __name__ == '__main__':
         print("Shutting down RoverController")
         rover.close_sockets()
 
-
-    # Example: Rotate gimbal 45 degrees to the right and 30 degrees up
-    #rover.control_gimbal_simple(x=45, y=30)
-    #time.sleep(2)
-    #rover.stop_gimbal()
