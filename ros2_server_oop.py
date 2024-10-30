@@ -10,12 +10,12 @@ from base_ctrl import BaseController
 from base_ctrl import ReadLine
 
 HOST_IP = '0.0.0.0'
-MOTOR_PORT = GIMBAL_PORT = 5000
+MOTOR_PORT = 5000
 FEEDBACK_PORT = 6000
+GIMBAL_PORT = 7000
 VIDEO_PORT = 8000
 SERIAL_PORT = '/dev/ttyAMA0'
 BAUD_RATE = 115200
-
 
 class RoverController():
     def __init__(self):
@@ -33,6 +33,10 @@ class RoverController():
         self.feedback_sock.bind((HOST_IP, FEEDBACK_PORT))
         self.feedback_sock.listen(1)
 
+        self.gimbal_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.gimbal_sock.bind((HOST_IP, GIMBAL_PORT))
+        self.gimbal_sock.listen(1)
+
         self.video_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.video_sock.bind((HOST_IP, VIDEO_PORT))
         self.video_sock.listen(1)
@@ -49,6 +53,9 @@ class RoverController():
         self.feedback_thread = threading.Thread(target=self.feedback_thread_func, daemon=True)
         self.feedback_thread.start()
 
+        self.gimbal_thread = threading.Thread(target=self.gimbal_control_thread, daemon=True)
+        self.gimbal_thread.start()
+
         self.video_thread = threading.Thread(target=self.video_stream_thread, daemon=True)
         self.video_thread.start()
 
@@ -59,6 +66,7 @@ class RoverController():
         #command_str = json.dumps(command)
         command_str = command
         self.base.send_command(command_str)
+        #print(f'Sent command to ESP32: {command}')
 
     def motor_control_thread(self):
         """Thread to handle incoming commands (not just motors) from the laptop via sockets."""
@@ -71,7 +79,23 @@ class RoverController():
                 try:
                     command = json.loads(data.decode('utf-8'))
                     self.send_serial_command(command)
-                    print(f'Received command: {command}')
+                    #print(f'Received command: {command}')
+                except json.JSONDecodeError:
+                    print("Invalid JSON received")
+            conn.close()
+
+    def gimbal_control_thread(self):
+        """Thread to handle incoming commands (not just motors) from the laptop via sockets."""
+        while True:
+            conn, _ = self.gimbal_sock.accept()
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                try:
+                    command = json.loads(data.decode('utf-8'))
+                    self.send_serial_command(command)
+                    #print(f'Received command: {command}')
                 except json.JSONDecodeError:
                     print("Invalid JSON received")
             conn.close()
@@ -117,6 +141,9 @@ class RoverController():
                         }
                         conn.sendall(json.dumps(response).encode('utf-8'))
             conn.close()
+
+
+
 
     def disable_auto_feedback(self):
         """Send command to disable automatic feedback from ESP32."""
