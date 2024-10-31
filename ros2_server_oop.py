@@ -7,11 +7,9 @@ import threading
 import cv2
 from picamera2 import Picamera2
 
-from base_ctrl import BaseController
-from base_ctrl import ReadLine
-
 HOST_IP = '0.0.0.0'
 MOTOR_PORT = 5000
+LIGHTS_PORT = 5500
 FEEDBACK_PORT = 6000
 GIMBAL_PORT = 7000
 VIDEO_PORT = 8000
@@ -23,10 +21,6 @@ class RoverController():
         # Initialize priority queue and lock for serial access
         self.command_queue = PriorityQueue()
         self.serial_lock = threading.Lock()
-
-        # Serial connection to the ESP32
-        #self.base = BaseController(SERIAL_PORT, BAUD_RATE)
-        #self.readline = ReadLine
 
         # Serial connection to the ESP32
         # Directly initialize the serial connection
@@ -49,6 +43,10 @@ class RoverController():
         self.video_sock.bind((HOST_IP, VIDEO_PORT))
         self.video_sock.listen(1)
 
+        self.lights_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.lights_sock.bind((HOST_IP, LIGHTS_PORT))
+        self.lights_sock.listen(1)
+
         # Picamera2 for video streaming
         self.picam2 = Picamera2()
         self.picam2.configure(self.picam2.create_preview_configuration(main={"format": "RGB888"}))
@@ -67,6 +65,9 @@ class RoverController():
         self.video_thread = threading.Thread(target=self.video_stream_thread, daemon=True)
         self.video_thread.start()
 
+        self.lights_thread = threading.Thread(target=self.lights_control_thread, daemon=True)
+        self.lights_thread.start()
+
         # Start the serial comms thread
         self.start_serial_thread()
 
@@ -77,7 +78,7 @@ class RoverController():
         if self.serial_conn.is_open:
             # Convert the command, which is a dictionary, to a string
             command_str = json.dumps(command)
-            print(f"Sending command to ESP32: {command_str}")
+            #print(f"Sending command to ESP32: {command_str}")
             # Convert the string to binary
             self.serial_conn.write(command_str.encode() + b'\n')
             self.serial_conn.flush()  # Ensure data is written immediately
@@ -96,7 +97,7 @@ class RoverController():
                     command = json.loads(data.decode('utf-8'))
                     self.enqueue_command(command, priority=1)
                 except json.JSONDecodeError:
-                    print("Invalid JSON received")
+                    print('Motor control thread - invalid JSON received')
             conn.close()
 
     def gimbal_control_thread(self):
@@ -111,8 +112,24 @@ class RoverController():
                     command = json.loads(data.decode('utf-8'))
                     self.enqueue_command(command, priority=2)
                 except json.JSONDecodeError:
-                    print("Invalid JSON received")
+                    print('Gimbal control thread - invalid JSON received')
             conn.close()
+
+    def lights_control_thread(self):
+        """Thread to handle incoming commands (not just motors) from the laptop via sockets."""
+        while True:
+            conn, _ = self.lights_sock.accept()
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                try:
+                    command = json.loads(data.decode('utf-8'))
+                    self.enqueue_command(command, priority=2)
+                except json.JSONDecodeError:
+                    print('Lights control thread - invalid JSON received')
+            conn.close()
+
 
     def receive_feedback_from_esp32(self):
         # Implement an infinite loop to continuously monitor serial port data.
