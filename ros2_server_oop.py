@@ -1,15 +1,15 @@
 import socket
+import serial
 import json
 import time
+from queue import PriorityQueue
 import threading
 import cv2
 from picamera2 import Picamera2
 
-from base_ctrl import BaseController
-from base_ctrl import ReadLine
-
 HOST_IP = '0.0.0.0'
 MOTOR_PORT = 5000
+LIGHTS_PORT = 5500
 FEEDBACK_PORT = 6000
 GIMBAL_PORT = 7000
 VIDEO_PORT = 8000
@@ -18,9 +18,13 @@ BAUD_RATE = 115200
 
 class RoverController():
     def __init__(self):
+        # Initialize priority queue and lock for serial access
+        self.command_queue = PriorityQueue()
+        self.serial_lock = threading.Lock()
+
         # Serial connection to the ESP32
-        self.base = BaseController(SERIAL_PORT, BAUD_RATE)
-        self.readline = ReadLine
+        # Directly initialize the serial connection
+        self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
 
         # Set up socket connections for different components
         self.motor_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -38,6 +42,10 @@ class RoverController():
         self.video_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.video_sock.bind((HOST_IP, VIDEO_PORT))
         self.video_sock.listen(1)
+
+        self.lights_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.lights_sock.bind((HOST_IP, LIGHTS_PORT))
+        self.lights_sock.listen(1)
 
         # Picamera2 for video streaming
         self.picam2 = Picamera2()
@@ -57,13 +65,25 @@ class RoverController():
         self.video_thread = threading.Thread(target=self.video_stream_thread, daemon=True)
         self.video_thread.start()
 
+        self.lights_thread = threading.Thread(target=self.lights_control_thread, daemon=True)
+        self.lights_thread.start()
+
+        # Start the serial comms thread
+        self.start_serial_thread()
+
         print("Robot server has started")
 
     def send_serial_command(self, command):
         """Send JSON command via serial to the ESP32."""
-        command_str = command
-        self.base.send_command(command_str)
-        #print(f'Sent command to ESP32: {command}')
+        if self.serial_conn.is_open:
+            # Convert the command, which is a dictionary, to a string
+            command_str = json.dumps(command)
+            #print(f"Sending command to ESP32: {command_str}")
+            # Convert the string to binary
+            self.serial_conn.write(command_str.encode() + b'\n')
+            self.serial_conn.flush()  # Ensure data is written immediately
+        else:
+            print("Serial connection is not open.")
 
     def motor_control_thread(self):
         """Thread to handle incoming commands (not just motors) from the laptop via sockets."""
@@ -75,10 +95,9 @@ class RoverController():
                     break
                 try:
                     command = json.loads(data.decode('utf-8'))
-                    self.send_serial_command(command)
-                    #print(f'Received command: {command}')
+                    self.enqueue_command(command, priority=1)
                 except json.JSONDecodeError:
-                    print("Invalid JSON received")
+                    print('Motor control thread - invalid JSON received')
             conn.close()
 
     def gimbal_control_thread(self):
@@ -91,11 +110,26 @@ class RoverController():
                     break
                 try:
                     command = json.loads(data.decode('utf-8'))
-                    self.send_serial_command(command)
-                    #print(f'Received command: {command}')
+                    self.enqueue_command(command, priority=2)
                 except json.JSONDecodeError:
-                    print("Invalid JSON received")
+                    print('Gimbal control thread - invalid JSON received')
             conn.close()
+
+    def lights_control_thread(self):
+        """Thread to handle incoming commands (not just motors) from the laptop via sockets."""
+        while True:
+            conn, _ = self.lights_sock.accept()
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                try:
+                    command = json.loads(data.decode('utf-8'))
+                    self.enqueue_command(command, priority=2)
+                except json.JSONDecodeError:
+                    print('Lights control thread - invalid JSON received')
+            conn.close()
+
 
     def receive_feedback_from_esp32(self):
         # Implement an infinite loop to continuously monitor serial port data.
@@ -125,6 +159,7 @@ class RoverController():
                 #print(f'Feedback cmd from dev: {command} ')
                 if command.get("T") == 130:
                     # Query for feedback
+                    #self.send_serial_command(command)
                     self.request_feedback()
                     feedback = self.receive_feedback_from_esp32()
                     #print(f'feedback_thread_func:feedback from esp32: {feedback}')
@@ -194,6 +229,34 @@ class RoverController():
         self.feedback_sock.close()
         self.video_sock.close()
 
+    def enqueue_command(self, command, priority):
+        """Add a command to the priority queue."""
+        #self.command_queue.put((priority, command))
+        self.command_queue.put((priority, time.time(), command))
+
+    def process_serial_queue(self):
+        """Thread to process commands from the queue."""
+        while True:
+            priority, timestamp, command = self.command_queue.get()
+            try:
+                with self.serial_lock:
+                    #command_str = json.dumps(command)
+                    command_str = command
+                    self.send_serial_command(command_str)
+                    #print(f'Sent command: {command} with priority {priority}')
+            finally:
+                # Only mark task as done if the command was processed without interruption
+                self.command_queue.task_done()  # Mark this task as done
+
+    def start_serial_thread(self):
+        """Start the serial processing thread."""
+        serial_thread = threading.Thread(target=self.process_serial_queue, daemon=True)
+        serial_thread.start()
+
+    def close_serial_connection(self):
+        if self.serial_conn.is_open:
+            self.serial_conn.close()
+            print("Serial connection closed.")
 
 # Example usage
 if __name__ == '__main__':
@@ -207,4 +270,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("Shutting down RoverController")
         rover.close_sockets()
-
+        rover.close_serial_connection()
