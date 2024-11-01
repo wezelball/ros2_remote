@@ -19,7 +19,7 @@ BAUD_RATE = 115200
 class RoverController():
     def __init__(self):
         # Initialize priority queue and lock for serial access
-        self.command_queue = PriorityQueue()
+        self.command_queue = PriorityQueue(maxsize=5)
         self.serial_lock = threading.Lock()
 
         # Serial connection to the ESP32
@@ -78,7 +78,7 @@ class RoverController():
         if self.serial_conn.is_open:
             # Convert the command, which is a dictionary, to a string
             command_str = json.dumps(command)
-            #print(f"Sending command to ESP32: {command_str}")
+            print(f"Sending: {command_str}")
             # Convert the string to binary
             self.serial_conn.write(command_str.encode() + b'\n')
             self.serial_conn.flush()  # Ensure data is written immediately
@@ -106,13 +106,16 @@ class RoverController():
             conn, _ = self.gimbal_sock.accept()
             while True:
                 data = conn.recv(1024)
+                # TODO: Sleep statement below for testing slowing down gimbal thread
+                time.sleep(0.1)
                 if not data:
                     break
                 try:
                     command = json.loads(data.decode('utf-8'))
                     self.enqueue_command(command, priority=2)
                 except json.JSONDecodeError:
-                    print('Gimbal control thread - invalid JSON received')
+                    pass
+                    #print('Gimbal control thread - invalid JSON received')
             conn.close()
 
     def lights_control_thread(self):
@@ -231,7 +234,6 @@ class RoverController():
 
     def enqueue_command(self, command, priority):
         """Add a command to the priority queue."""
-        #self.command_queue.put((priority, command))
         self.command_queue.put((priority, time.time(), command))
 
     def process_serial_queue(self):
