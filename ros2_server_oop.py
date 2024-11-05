@@ -7,6 +7,7 @@ import threading
 import cv2
 from picamera2 import Picamera2
 
+
 HOST_IP = '0.0.0.0'
 MOTOR_PORT = 5000
 LIGHTS_PORT = 5500
@@ -15,11 +16,13 @@ GIMBAL_PORT = 7000
 VIDEO_PORT = 8000
 SERIAL_PORT = '/dev/ttyAMA0'
 BAUD_RATE = 115200
+MAX_QUEUE_ITEMS = 10
+COMMAND_EXPIRY_MS = 50
 
 class RoverController():
     def __init__(self):
         # Initialize priority queue and lock for serial access
-        self.command_queue = PriorityQueue(maxsize=5)
+        self.command_queue = PriorityQueue(maxsize=MAX_QUEUE_ITEMS)
         self.serial_lock = threading.Lock()
 
         # Serial connection to the ESP32
@@ -107,7 +110,7 @@ class RoverController():
             while True:
                 data = conn.recv(1024)
                 # TODO: Sleep statement below for testing slowing down gimbal thread
-                time.sleep(0.1)
+                time.sleep(0.05)
                 if not data:
                     break
                 try:
@@ -233,12 +236,31 @@ class RoverController():
         self.video_sock.close()
 
     def enqueue_command(self, command, priority):
-        """Add a command to the priority queue."""
+        """Add a command to the priority queue with a priority and a timestamp."""
         self.command_queue.put((priority, time.time(), command))
+
+    def remove_expired_commands(self):
+        """Remove commands from the queue that have expired"""
+        current_time_ = time.time()
+        temp_queue = PriorityQueue(maxsize=MAX_QUEUE_ITEMS)
+
+        while not self.command_queue.empty():
+            priority, timestamp, command = self.command_queue.get()
+            # check if the command is still valid
+            if (current_time_ - timestamp) * 1000 <= COMMAND_EXPIRY_MS:
+                # If not too old, reinsert into temp queue
+                temp_queue.put((priority, timestamp, command))
+            else:
+                print("Found expired command")
+
+        # Replace the command_queue with only fresh non-expired commands
+        self.command_queue = temp_queue
 
     def process_serial_queue(self):
         """Thread to process commands from the queue."""
         while True:
+            # Remove commands older than COMMAND_EXPIRY_MS
+            #self.remove_expired_commands()
             priority, timestamp, command = self.command_queue.get()
             try:
                 with self.serial_lock:
