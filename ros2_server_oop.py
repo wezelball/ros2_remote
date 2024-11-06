@@ -1,3 +1,4 @@
+import struct
 import socket
 import serial
 import json
@@ -6,6 +7,7 @@ from queue import PriorityQueue
 import threading
 import cv2
 from picamera2 import Picamera2
+import numpy as np
 
 
 HOST_IP = '0.0.0.0'
@@ -15,7 +17,10 @@ FEEDBACK_PORT = 6000
 GIMBAL_PORT = 7000
 VIDEO_PORT = 8000
 SERIAL_PORT = '/dev/ttyAMA0'
+LIDAR_PORT = '/dev/ttyUSB0'
 BAUD_RATE = 115200
+LIDAR_BAUD_RATE = 230400
+PACKET_LENGTH = 47
 MAX_QUEUE_ITEMS = 10
 COMMAND_EXPIRY_MS = 50
 
@@ -28,6 +33,9 @@ class RoverController():
         # Serial connection to the ESP32
         # Directly initialize the serial connection
         self.serial_conn = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+
+        # Serial connection to the LIDAR
+        self.lidar_conn = serial.Serial(LIDAR_PORT, LIDAR_BAUD_RATE, timeout=1)
 
         # Set up socket connections for different components
         self.motor_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -55,26 +63,144 @@ class RoverController():
         self.picam2.configure(self.picam2.create_preview_configuration(main={"format": "RGB888"}))
         self.picam2.start()
 
-        # Start threads for motor, feedback, and video
-        self.motor_thread = threading.Thread(target=self.motor_control_thread, daemon=True)
-        self.motor_thread.start()
+        self.lidar_data = b''  # Initialize to store latest LiDAR data as bytes
 
-        self.feedback_thread = threading.Thread(target=self.feedback_thread_func, daemon=True)
-        self.feedback_thread.start()
-
-        self.gimbal_thread = threading.Thread(target=self.gimbal_control_thread, daemon=True)
-        self.gimbal_thread.start()
-
-        self.video_thread = threading.Thread(target=self.video_stream_thread, daemon=True)
-        self.video_thread.start()
-
-        self.lights_thread = threading.Thread(target=self.lights_control_thread, daemon=True)
-        self.lights_thread.start()
-
-        # Start the serial comms thread
-        self.start_serial_thread()
+        # Start all of the threads
+        self.start_threads()
 
         print("Robot server has started")
+
+    def start_threads(self):
+        """Initialize and start all component threads."""
+        threading.Thread(target=self.motor_control_thread, daemon=True).start()
+        threading.Thread(target=self.feedback_thread_func, daemon=True).start()
+        threading.Thread(target=self.gimbal_control_thread, daemon=True).start()
+        threading.Thread(target=self.video_stream_thread, daemon=True).start()
+        threading.Thread(target=self.lights_control_thread, daemon=True).start()
+        threading.Thread(target=self.process_serial_queue, daemon=True).start()
+        threading.Thread(target=self.start_lidar_server, daemon=True).start()
+        threading.Thread(target=self.lidar_read_loop, daemon=True).start()
+
+    def start_lidar_server(self):
+        """Function to start a dedicated LiDAR server on port 9000."""
+        self.lidar_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.lidar_socket.bind(('0.0.0.0', 9000))
+        self.lidar_socket.listen()
+
+        print("LiDAR server listening on port 9000")
+
+        while True:
+            client_conn, client_addr = self.lidar_socket.accept()
+            print(f"LiDAR client connected from {client_addr}")
+
+            lidar_thread = threading.Thread(target=self.handle_lidar_client, args=(client_conn,), daemon=True)
+            lidar_thread.start()
+
+    def handle_lidar_client(self, client_conn):
+        """Send LiDAR data continuously to the connected client."""
+        try:
+            while True:
+                lidar_data = self.get_latest_lidar_data()
+                if lidar_data:
+                    # Send LiDAR data to the client in a structured format
+                    client_conn.sendall(json.dumps(lidar_data).encode())
+                    #print(f'lidar data: {lidar_data}')
+                time.sleep(0.1)  # Adjust for your desired data frequency
+        except Exception as e:
+            print(f"Error in LiDAR client handler: {e}")
+        finally:
+            client_conn.close()
+
+    def get_latest_lidar_data(self):
+        """Fetch the latest LiDAR data as a bytes object.
+        This function should return the LiDAR data packet formatted as needed.
+        """
+        # For example, suppose you have a variable `self.lidar_data` that stores the latest data packet
+        if hasattr(self, 'lidar_data'):
+            return self.lidar_data
+        else:
+            return None
+
+    def lidar_read_loop(self):
+        """Continuously read data from the LiDAR device and update the latest packet."""
+        while True:
+            try:
+                packet = self.read_lidar_packet()
+                if packet:
+                    #print(f"LiDAR Packet: {packet}")
+                    self.lidar_data = self.process_lidar_data(packet)
+                    #print(f'self.lidar_data: {self.lidar_data}')
+            except Exception as e:
+                print(f"LiDAR read error: {e}")
+            time.sleep(0.01)  # Adjust for LiDAR read frequency
+
+    def read_lidar_packet(self):
+        """Read and parse a single LiDAR data packet."""
+        # Find the start character (0x54) in the data stream
+        while True:
+            byte = self.lidar_conn.read(1)
+            if len(byte) == 1 and byte[0] == 0x54:
+                break
+
+        # Read the rest of the packet
+        data = self.lidar_conn.read(PACKET_LENGTH - 1)
+        if len(data) != PACKET_LENGTH - 1:
+            print("Incomplete packet received")
+            return None
+
+        # Parse packet contents and return data points
+        data_length = data[0]
+        num_points = data_length & 0x1F
+        radar_speed = struct.unpack_from('<H', data, 1)[0] / 100.0
+        start_angle = struct.unpack_from('<H', data, 3)[0] / 100.0
+        end_angle = struct.unpack_from('<H', data, 41)[0] / 100.0
+
+        # Calculate angular resolution
+        angular_resolution = ((360.0 - start_angle + end_angle) if end_angle < start_angle
+                              else (end_angle - start_angle)) / max((num_points - 1), 1)
+
+        data_points = []
+        for i in range(12):
+            offset = 5 + i * 3
+            distance = struct.unpack_from('<H', data, offset)[0]
+            confidence = data[offset + 2]
+            angle = (start_angle + i * angular_resolution) % 360
+            data_points.append((angle, distance, confidence))
+
+        return data_points
+
+    def process_lidar_data(self, data_points):
+        """Process LiDAR data points, e.g., for visualization or obstacle detection.
+        data_points is a list of tuples where each tuple consists of angle, distance, and confidence.
+        Here is an example:
+
+        data_points: [(193.94, 2541, 176), (194.64636363636365, 2549, 177),...]
+
+        equates to:
+
+        Angle: 193.94, Distance: 2541 mm, Confidence: 176
+        Angle: 194.65, Distance: 2549 mm, Confidence: 177
+        ...
+
+        There are 12 of these in the data_points packet.
+
+        According to ChatGPT, process_lidar_data needs to return an array of tuples
+        (angle, distance)
+
+        """
+
+        # Create an empty list that will be returned by this function
+        processed_data = []
+
+        for angle, distance, confidence in data_points:
+            if confidence > 0:  # Filter points with low confidence
+                processed_data.append((angle, distance))
+                # print(f"Angle: {angle:.2f}, Distance: {distance} mm, Confidence: {confidence}")
+                pass
+
+            # print(f'processed_data: {processed_data}')
+
+        return processed_data
 
     def send_serial_command(self, command):
         """Send JSON command via serial to the ESP32."""
@@ -234,6 +360,8 @@ class RoverController():
         self.motor_sock.close()
         self.feedback_sock.close()
         self.video_sock.close()
+        self.lights_sock.close()
+        self.lidar_socket.close()
 
     def enqueue_command(self, command, priority):
         """Add a command to the priority queue with a priority and a timestamp."""
@@ -272,15 +400,13 @@ class RoverController():
                 # Only mark task as done if the command was processed without interruption
                 self.command_queue.task_done()  # Mark this task as done
 
-    def start_serial_thread(self):
-        """Start the serial processing thread."""
-        serial_thread = threading.Thread(target=self.process_serial_queue, daemon=True)
-        serial_thread.start()
-
     def close_serial_connection(self):
         if self.serial_conn.is_open:
             self.serial_conn.close()
-            print("Serial connection closed.")
+            print("ESP32 serial connection closed.")
+        if self.lidar_conn.is_open:
+            self.lidar_conn.close()
+            print("LIDAR serial connection closed.")
 
 # Example usage
 if __name__ == '__main__':
@@ -292,6 +418,7 @@ if __name__ == '__main__':
             time.sleep(1)
             # Place logging/status checks here
     except KeyboardInterrupt:
-        print("Shutting down RoverController")
+        print("Shutting down Robot server")
         rover.close_sockets()
         rover.close_serial_connection()
+        print("Robot server has stopped.")
