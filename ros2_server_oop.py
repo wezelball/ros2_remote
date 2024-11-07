@@ -3,6 +3,7 @@ import socket
 import serial
 import json
 import time
+import math
 from queue import PriorityQueue
 import threading
 import cv2
@@ -125,6 +126,7 @@ class RoverController():
         """Continuously read data from the LiDAR device and update the latest packet."""
         while True:
             try:
+                #print('DEBUG: before self.read_lidar_packet()')
                 packet = self.read_lidar_packet()
                 if packet:
                     #print(f"LiDAR Packet: {packet}")
@@ -148,28 +150,51 @@ class RoverController():
             print("Incomplete packet received")
             return None
 
+
+
         # Parse packet contents and return data points
         data_length = data[0]
         num_points = data_length & 0x1F
         radar_speed = struct.unpack_from('<H', data, 1)[0] / 100.0
-        start_angle = struct.unpack_from('<H', data, 3)[0] / 100.0
-        end_angle = struct.unpack_from('<H', data, 41)[0] / 100.0
+        start_angle_deg = struct.unpack_from('<H', data, 3)[0] / 100.0
+        start_angle_rad = start_angle_deg * (math.pi / 180.0)
+        end_angle_deg = struct.unpack_from('<H', data, 41)[0] / 100.0
+        end_angle_rad = end_angle_deg * (math.pi / 180.0)
+
 
         # Calculate angular resolution
-        angular_resolution = ((360.0 - start_angle + end_angle) if end_angle < start_angle
-                              else (end_angle - start_angle)) / max((num_points - 1), 1)
+        angular_resolution = ((360.0 - start_angle_deg + end_angle_deg) if end_angle_deg < start_angle_deg
+                              else (end_angle_deg - start_angle_deg)) / max((num_points - 1), 1)
 
         data_points = []
+        # For each measurement, unpack the angle, distance, and confidence, and append
+        # to data_points list
         for i in range(12):
             offset = 5 + i * 3
             distance = struct.unpack_from('<H', data, offset)[0]
             confidence = data[offset + 2]
-            angle = (start_angle + i * angular_resolution) % 360
-            data_points.append((angle, distance, confidence))
+            angle_deg = (start_angle_deg + i * angular_resolution) % 360
+            angle_rad = angle_deg * (math.pi/180)
+            data_point = [angle_rad, distance]
+            data_points.append(data_point)
 
-        return data_points
+        #print (f'start_angle_deg: {start_angle_deg}')
+        #print(f'end_angle_deg: {end_angle_deg}')
+        #print(f'data_points: {data_points}')
 
-    def process_lidar_data(self, data_points):
+        # Create actual LIDAR packet which includes min and max angles,
+        # as well as each data point.
+        lidar_packet = {
+            "angle_min": start_angle_rad,  # minimum angle in the packet
+            "angle_max": end_angle_rad,  # maximum angle in the packet
+            # THIS IS THE PROBLEM I THINK
+            "ranges": [[angle, distance] for angle, distance in data_points]
+        }
+
+        #print(f'DEBUG: lidar_packet: {lidar_packet}')
+        return lidar_packet
+
+    def process_lidar_data(self, lidar_packet):
         """Process LiDAR data points, e.g., for visualization or obstacle detection.
         data_points is a list of tuples where each tuple consists of angle, distance, and confidence.
         Here is an example:
@@ -187,20 +212,11 @@ class RoverController():
         According to ChatGPT, process_lidar_data needs to return an array of tuples
         (angle, distance)
 
+        Now I need to add scan angle_min and angle_max
+
         """
 
-        # Create an empty list that will be returned by this function
-        processed_data = []
-
-        for angle, distance, confidence in data_points:
-            if confidence > 0:  # Filter points with low confidence
-                processed_data.append((angle, distance))
-                # print(f"Angle: {angle:.2f}, Distance: {distance} mm, Confidence: {confidence}")
-                pass
-
-            # print(f'processed_data: {processed_data}')
-
-        return processed_data
+        return lidar_packet
 
     def send_serial_command(self, command):
         """Send JSON command via serial to the ESP32."""
