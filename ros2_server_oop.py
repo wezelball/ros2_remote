@@ -171,7 +171,8 @@ class RoverController():
         # to data_points list
         for i in range(12):
             offset = 5 + i * 3
-            distance = struct.unpack_from('<H', data, offset)[0]
+            # Unpack the distance and divide by 1000 to conver to mm
+            distance = struct.unpack_from('<H', data, offset)[0] / 1000.0
             confidence = data[offset + 2]
             angle_deg = (start_angle_deg + i * angular_resolution) % 360
             angle_rad = angle_deg * (math.pi/180)
