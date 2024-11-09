@@ -130,7 +130,7 @@ class RoverController():
                 packet = self.read_lidar_packet()
                 if packet:
                     #print(f"LiDAR Packet: {packet}")
-                    self.lidar_data = self.process_lidar_data(packet)
+                    self.lidar_data = packet
                     #print(f'self.lidar_data: {self.lidar_data}')
             except Exception as e:
                 print(f"LiDAR read error: {e}")
@@ -155,7 +155,7 @@ class RoverController():
         # Parse packet contents and return data points
         data_length = data[0]
         num_points = data_length & 0x1F
-        radar_speed = struct.unpack_from('<H', data, 1)[0] / 100.0
+        #radar_speed = struct.unpack_from('<H', data, 1)[0] / 100.0
         start_angle_deg = struct.unpack_from('<H', data, 3)[0] / 100.0
         start_angle_rad = start_angle_deg * (math.pi / 180.0)
         end_angle_deg = struct.unpack_from('<H', data, 41)[0] / 100.0
@@ -193,30 +193,6 @@ class RoverController():
         }
 
         #print(f'DEBUG: lidar_packet: {lidar_packet}')
-        return lidar_packet
-
-    def process_lidar_data(self, lidar_packet):
-        """Process LiDAR data points, e.g., for visualization or obstacle detection.
-        data_points is a list of tuples where each tuple consists of angle, distance, and confidence.
-        Here is an example:
-
-        data_points: [(193.94, 2541, 176), (194.64636363636365, 2549, 177),...]
-
-        equates to:
-
-        Angle: 193.94, Distance: 2541 mm, Confidence: 176
-        Angle: 194.65, Distance: 2549 mm, Confidence: 177
-        ...
-
-        There are 12 of these in the data_points packet.
-
-        According to ChatGPT, process_lidar_data needs to return an array of tuples
-        (angle, distance)
-
-        Now I need to add scan angle_min and angle_max
-
-        """
-
         return lidar_packet
 
     def send_serial_command(self, command):
